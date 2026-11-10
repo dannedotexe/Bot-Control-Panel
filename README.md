@@ -78,6 +78,7 @@ Repo klonen, `bash install.sh` ausführen. Bei gleicher Installation mit neuer I
 | Aufgabe | Befehl |
 | --- | --- |
 | Update | `bash update.sh` (holt `git pull --ff-only`, startet nur das Panel neu, prüft die Erreichbarkeit) |
+| Automatische Updates | `bash scripts/setup-autoupdate.sh` (Deploy-Key + systemd-Timer, prüft alle 10 s; abschalten mit `--disable`, Log: `journalctl -u bcp-update -n 30`) |
 | Passwort ändern | `bash scripts/set-password.sh` |
 | 2FA (TOTP) einrichten / entfernen | `bash scripts/setup-2fa.sh` / `bash scripts/setup-2fa.sh --disable` |
 | Logs des Panels | `pm2 logs bot-control-panel --lines 50 --nostream` |

@@ -4,10 +4,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 APP=bot-control-panel
 [ "$(id -u)" -ne 0 ] || { echo "Bitte ohne sudo ausführen."; exit 1; }
+QUIET=0; [ "${1:-}" = "--quiet" ] && QUIET=1
 BEFORE="$(git rev-parse --short HEAD)"
-git pull --ff-only
+if [ "$QUIET" -eq 1 ]; then git pull -q --ff-only; else git pull --ff-only; fi
 AFTER="$(git rev-parse --short HEAD)"
-if [ "$BEFORE" = "$AFTER" ] && [ "${1:-}" != "--force" ]; then echo "Bereits aktuell ($AFTER)."; exit 0; fi
+if [ "$BEFORE" = "$AFTER" ] && [ "${1:-}" != "--force" ]; then [ "$QUIET" -eq 1 ] || echo "Bereits aktuell ($AFTER)."; exit 0; fi
+echo "$(date -Is) Update $BEFORE → $AFTER"
 for f in server/*.mjs; do node --check "$f"; done
 [ -f public/index.html ] || { echo "public/ fehlt – Abbruch."; exit 1; }
 if pm2 describe "$APP" >/dev/null 2>&1; then pm2 restart "$APP" --update-env >/dev/null
