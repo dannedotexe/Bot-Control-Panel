@@ -1,6 +1,6 @@
-import { h, icon, statusEl, avatar, sparkline, kv, fmtBytes, fmtPct, fmtDuration, fmtDateTime, fmtTime, fmtFull, setText } from '../ui.js';
-import { store, api } from '../api.js';
-import { actionButtons } from '../actions.js';
+import { h, icon, statusEl, avatar, sparkline, kv, fmtBytes, fmtPct, fmtDuration, fmtDateTime, fmtTime, fmtFull, setText, formDialog, confirmDialog, toast } from '../ui.js';
+import { store, api, errorText } from '../api.js';
+import { actionButtons, runAction } from '../actions.js';
 import { createLogView } from '../logview.js';
 
 function stat(label, small = false) {
@@ -52,6 +52,7 @@ export function botPage(id) {
     ['logs', 'Live-Logs'],
     ['errors', 'Letzte Fehler'],
     ['config', 'Konfiguration'],
+    ['env', 'Umgebung & Limits'],
   ];
   const tabButtons = tabDefs.map(([key, label]) => h('button', { role: 'tab', onclick: () => showTab(key) }, label));
 
@@ -68,6 +69,7 @@ export function botPage(id) {
       logView = createLogView({ bot: id, short: true });
       tabBody.replaceChildren(logView.el);
     } else if (key === 'errors') loadErrors();
+    else if (key === 'env') loadEnv();
     else loadConfig();
   }
 
@@ -88,6 +90,98 @@ export function botPage(id) {
     } catch {
       if (active === 'errors') tabBody.replaceChildren(h('div', { class: 'panel empty', text: 'Fehlerprotokoll konnte nicht geladen werden.' }));
     }
+  }
+
+  async function saveEnv({ key, value, remove }) {
+    const extra = [{ name: 'password', label: 'Dein Panel-Passwort zur Bestätigung', type: 'password', autocomplete: 'current-password', required: true }];
+    const fields = remove
+      ? extra
+      : [
+          { name: 'key', label: 'Name', value: key || '', readonly: Boolean(key), placeholder: 'z. B. DISCORD_TOKEN', required: true },
+          { name: 'value', label: 'Neuer Wert', type: 'password', placeholder: key ? 'Neuer Wert (der alte wird nicht angezeigt)' : 'Wert', hint: 'Wird verschlüsselt übertragen und nie wieder angezeigt.' },
+          ...extra,
+        ];
+    const res = await formDialog({
+      title: remove ? `${key} entfernen?` : key ? `${key} ändern` : 'Variable hinzufügen',
+      text: remove ? 'Der Eintrag wird aus der .env des Bots gelöscht. Eine Sicherung (.env.bak) wird angelegt.' : null,
+      fields,
+      confirmLabel: remove ? 'Entfernen' : 'Speichern',
+      danger: remove,
+    });
+    if (!res) return;
+    try {
+      await api(`/api/bots/${id}/env`, { method: 'POST', body: remove ? { key, remove: true, password: res.password } : { key: res.key.trim(), value: res.value, password: res.password } });
+      toast(`${remove ? key + ' entfernt' : (key || res.key.trim()) + ' gespeichert'} – Neustart nötig`);
+      loadEnv(true);
+    } catch (err) {
+      toast(errorText(err), 'error');
+    }
+  }
+
+  async function loadEnv(offerRestart = false) {
+    tabBody.replaceChildren(h('div', { class: 'panel empty', text: 'Lade …' }));
+    const b = find();
+    let envData = null;
+    let envError = null;
+    try {
+      envData = await api(`/api/bots/${id}/env`);
+    } catch (err) {
+      envError = errorText(err);
+    }
+    if (active !== 'env') return;
+
+    const rows = h('div', { class: 'rows' });
+    if (envError) rows.append(h('div', { class: 'empty', text: envError }));
+    else if (!envData.keys.length) rows.append(h('div', { class: 'empty', text: envData.exists ? 'Die .env ist leer.' : 'Dieser Bot hat noch keine .env – mit „Hinzufügen“ wird sie angelegt.' }));
+    for (const k of envData?.keys || []) {
+      rows.append(
+        h(
+          'div',
+          { class: 'kv env-row' },
+          h('div', { class: 'k mono', text: k }),
+          h(
+            'div',
+            { class: 'v env-v' },
+            h('span', { class: 'faint', text: '•••••••• (verborgen)' }),
+            h('span', { class: 'env-actions' }, h('button', { class: 'btn sm', onclick: () => saveEnv({ key: k }) }, icon('pencil'), 'Ändern'), h('button', { class: 'btn sm ghost icon-only danger', title: 'Entfernen', 'aria-label': `${k} entfernen`, onclick: () => saveEnv({ key: k, remove: true }) }, icon('trash-2'))),
+          ),
+        ),
+      );
+    }
+    const envPanel = h(
+      'div',
+      { class: 'panel' },
+      h('div', { class: 'panel-head' }, h('h2', { text: '.env des Bots' }), envError || b?.self ? null : h('button', { class: 'btn sm', onclick: () => saveEnv({}) }, icon('plus'), 'Hinzufügen')),
+      offerRestart && b && !b.self
+        ? h('div', { class: 'banner env-banner' }, icon('info'), h('span', { class: 'grow', text: 'Änderungen werden erst nach einem Neustart des Bots wirksam.' }), h('button', { class: 'btn sm', onclick: () => runAction(find(), 'restart') }, icon('rotate-cw'), 'Jetzt neu starten'))
+        : null,
+      rows,
+      h('div', { class: 'log-foot' }, h('span', { text: 'Werte werden nie angezeigt oder an den Browser gesendet – nur ersetzt. Jede Änderung braucht dein Passwort.' })),
+    );
+
+    const limitInput = h('input', { class: 'input num', type: 'number', min: '32', max: '65536', step: '16', placeholder: 'kein Limit' });
+    limitInput.classList.add('limit-input');
+    if (b?.memoryLimitMB) limitInput.value = String(b.memoryLimitMB);
+    const saveLimit = async (val) => {
+      try {
+        await api(`/api/bots/${id}/limit`, { method: 'POST', body: { memoryMB: val } });
+        toast(val ? `RAM-Limit ${val} MB gesetzt` : 'RAM-Limit entfernt');
+      } catch (err) {
+        toast(errorText(err), 'error');
+      }
+    };
+    const limitPanel = h(
+      'div',
+      { class: 'panel' },
+      h('div', { class: 'panel-head' }, h('h2', { text: 'RAM-Limit' })),
+      h(
+        'div',
+        { class: 'panel-body limit-body' },
+        h('div', { class: 'limit-row' }, limitInput, h('span', { class: 'muted', text: 'MB' }), h('button', { class: 'btn sm primary', disabled: b?.self ? true : null, onclick: () => saveLimit(limitInput.value ? Number(limitInput.value) : null) }, 'Speichern'), b?.memoryLimitMB ? h('button', { class: 'btn sm ghost', onclick: () => ((limitInput.value = ''), saveLimit(null)) }, 'Entfernen') : null),
+        h('p', { class: 'faint', text: b?.self ? 'Für das Panel selbst nicht einstellbar.' : 'Liegt der Bot dreimal hintereinander darüber, startet das Panel ihn neu (höchstens alle 5 Minuten) und meldet es. Echte Drosselung statt Neustart wäre erst mit Containern möglich.' }),
+      ),
+    );
+    tabBody.replaceChildren(h('div', { class: 'stack' }, envPanel, limitPanel));
   }
 
   async function loadConfig() {
@@ -155,7 +249,7 @@ export function botPage(id) {
     const online = b.status === 'online';
     st.set(b.status);
     acts.update(b);
-    setText(sub, [`pm2-ID ${b.id}`, b.version ? `v${b.version}` : null, b.startedAt ? `letzter Neustart ${fmtDateTime(b.startedAt)}` : null].filter(Boolean).join(' · '));
+    setText(sub, [b.discordName ? `Discord: ${b.discordName}` : null, `pm2-ID ${b.id}`, b.version ? `v${b.version}` : null, b.startedAt ? `letzter Neustart ${fmtDateTime(b.startedAt)}` : null].filter(Boolean).join(' · '));
     sPid.set(b.pid ? String(b.pid) : '–');
     sCpu.set(online ? fmtPct(b.cpu, 1) : '–');
     sRam.set(online ? fmtBytes(b.memory) : '–');

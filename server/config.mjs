@@ -1,6 +1,7 @@
 // Konfiguration: ausschließlich aus .env (bzw. Prozess-Umgebung). Keine Secrets im Code.
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 export function parseEnv(text) {
   const out = {};
@@ -55,6 +56,11 @@ export function loadConfig(root, processEnv = process.env) {
     idlePollMs: int(env.BCP_IDLE_POLL_MS, 20_000, 5000, 300_000),
     publicDir: path.join(root, 'public'),
     avatarDir: path.join(root, 'data', 'avatars'),
+    limitsFile: path.join(root, 'data', 'limits.json'),
+    // .env-Editor: nur Bots, deren Arbeitsverzeichnis unterhalb dieses Ordners liegt
+    envRoot: path.resolve(env.BCP_ENV_ROOT || os.homedir()),
+    discordStatus: env.BCP_DISCORD_STATUS !== '0',
+    discordAvatars: env.BCP_DISCORD_AVATARS !== '0',
   };
   return config;
 }

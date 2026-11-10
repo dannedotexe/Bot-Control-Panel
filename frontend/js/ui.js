@@ -244,3 +244,61 @@ export function kv(key, value) {
 export function setText(el, value) {
   if (el.textContent !== value) el.textContent = value;
 }
+
+// Dialog mit Eingabefeldern. Liefert { name: wert } oder null bei Abbruch.
+export function formDialog({ title, text, fields, confirmLabel = 'Speichern', danger = false }) {
+  return new Promise((resolve) => {
+    const inputs = {};
+    const done = (ok) => {
+      overlay.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(ok ? Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value])) : null);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') done(false);
+    };
+    const form = h(
+      'form',
+      {
+        class: 'dialog',
+        role: 'dialog',
+        'aria-modal': 'true',
+        onsubmit: (e) => {
+          e.preventDefault();
+          done(true);
+        },
+      },
+      h('h3', { text: title }),
+      text ? h('p', { text }) : null,
+      h(
+        'div',
+        { class: 'dialog-fields' },
+        fields.map((f) => {
+          const el = h('input', { class: 'input', name: f.name, type: f.type || 'text', placeholder: f.placeholder || '', autocomplete: f.autocomplete || 'off', spellcheck: 'false', required: f.required ? true : null, readonly: f.readonly ? true : null });
+          if (f.value) el.value = f.value;
+          inputs[f.name] = el;
+          return h('label', { class: 'field' }, h('span', { text: f.label }), el, f.hint ? h('small', { class: 'faint', text: f.hint }) : null);
+        }),
+      ),
+      h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: () => done(false) }, 'Abbrechen'), h('button', { class: `btn ${danger ? 'danger-solid' : 'primary'}`, type: 'submit' }, confirmLabel)),
+    );
+    const overlay = h('div', { class: 'overlay', onclick: (e) => e.target === overlay && done(false) }, form);
+    document.addEventListener('keydown', onKey);
+    document.body.append(overlay);
+    (fields.find((f) => !f.readonly && !f.value) ? inputs[fields.find((f) => !f.readonly && !f.value).name] : Object.values(inputs)[0])?.focus();
+  });
+}
+
+const DISCORD = {
+  none: ['Alle Systeme normal', 'ok'],
+  minor: ['Leichte Störung', 'warn'],
+  major: ['Größere Störung', 'err'],
+  critical: ['Schwere Störung', 'err'],
+  unknown: ['Status unbekannt', ''],
+};
+
+export function discordStatusEl(d) {
+  const [label, cls] = DISCORD[d?.indicator] || DISCORD.unknown;
+  const text = d?.error && d?.indicator === 'unknown' ? 'Nicht abrufbar' : label;
+  return h('span', { class: `status ${cls}`.trim(), title: d?.description || '' }, h('i', { class: `dot ${cls}`.trim() }), text);
+}

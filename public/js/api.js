@@ -7,6 +7,7 @@ export const store = {
   history: [],
   botHistory: {},
   notifications: [],
+  discord: null,
   state: null,
   live: false,
 };
@@ -40,6 +41,14 @@ const MESSAGES = {
   pm2_failed: 'pm2 hat die Aktion nicht ausgeführt.',
   bad_csrf: 'Sitzung ungültig. Bitte Seite neu laden.',
   too_many_streams: 'Zu viele offene Live-Verbindungen.',
+  wrong_password: 'Passwort ist falsch.',
+  invalid_key: 'Ungültiger Name (nur Buchstaben, Ziffern und _).',
+  invalid_value: 'Ungültiger Wert (keine Zeilenumbrüche, max. 4096 Zeichen).',
+  invalid_limit: 'Limit muss zwischen 32 und 65536 MB liegen.',
+  env_outside_root: 'Das Arbeitsverzeichnis dieses Bots liegt außerhalb des erlaubten Bereichs.',
+  env_not_regular: 'Die .env ist keine normale Datei (z. B. ein Link) und wird nicht angefasst.',
+  env_too_large: 'Die .env ist ungewöhnlich groß und wird nicht angefasst.',
+  env_no_cwd: 'Für diesen Bot ist kein Arbeitsverzeichnis bekannt.',
 };
 
 export const errorText = (err) => MESSAGES[err?.code] || 'Unerwarteter Fehler. Bitte erneut versuchen.';
@@ -103,7 +112,7 @@ export function connect() {
   source = new EventSource('/api/stream');
   source.addEventListener('init', (e) => {
     const d = JSON.parse(e.data);
-    Object.assign(store, { info: d.info, history: d.history, botHistory: d.botHistory, notifications: d.notifications, state: d.state, live: true });
+    Object.assign(store, { info: d.info, history: d.history, botHistory: d.botHistory, notifications: d.notifications, discord: d.discord, state: d.state, live: true });
     emit('state');
     emit('notify');
   });
@@ -127,6 +136,10 @@ export function connect() {
     store.notifications.push(JSON.parse(e.data));
     if (store.notifications.length > 50) store.notifications.shift();
     emit('notify');
+  });
+  source.addEventListener('discord', (e) => {
+    store.discord = JSON.parse(e.data);
+    emit('state');
   });
   source.addEventListener('expired', () => endSession());
   source.onerror = () => {

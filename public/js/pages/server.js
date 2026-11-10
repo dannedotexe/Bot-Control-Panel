@@ -1,4 +1,4 @@
-import { h, pageHead, sparkline, meter, kv, statusEl, fmtBytes, fmtPct, fmtRate, fmtDuration, setText } from '../ui.js';
+import { h, pageHead, sparkline, meter, kv, statusEl, fmtBytes, fmtPct, fmtRate, fmtDuration, setText, discordStatusEl, fmtAgo } from '../ui.js';
 import { store } from '../api.js';
 
 function chartPanel(title, opts, foot) {
@@ -48,6 +48,7 @@ export function serverPage() {
 
   const rows = {
     status: kv('Status', statusEl('online')),
+    discord: kv('Discord-API'),
     host: kv('Hostname'),
     os: kv('Betriebssystem'),
     kernel: kv('Kernel'),
@@ -99,6 +100,16 @@ export function serverPage() {
     setText(net.side, `Skala bis ${fmtRate(top)}`);
     setText(net.span, spanLabel);
 
+    const d = store.discord;
+    rows.discord.set(
+      h(
+        'span',
+        null,
+        discordStatusEl(d),
+        d?.incidents?.length ? h('span', { class: 'faint', text: ` · ${d.incidents.map((i) => i.name).join(' · ')}` }) : null,
+        d?.checkedAt ? h('span', { class: 'faint', text: ` · geprüft ${fmtAgo(d.checkedAt)}` }) : null,
+      ),
+    );
     rows.host.set(info.hostname);
     rows.os.set(info.os);
     rows.kernel.set(info.kernel);

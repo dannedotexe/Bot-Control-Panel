@@ -24,8 +24,21 @@ const SCALE = Number(process.env.SHOT_SCALE || 2);
 execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days', '2', '-subj', '/CN=e2e', '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', path.join(tmp, 'key.pem'), '-out', path.join(tmp, 'cert.pem')], { stdio: 'ignore' });
 
 const pm2 = createFakePm2({ logDir: tmp });
-const config = { ...loadConfig(root, {}), passwordHash: await hashPassword(PASSWORD), sessionSecret: 'e'.repeat(48), pollMs: 1000 };
-const app = createApp({ config, pm2, version: '1.0.0', log: { info() {}, warn() {}, error: console.error }, tlsInfo: { fingerprint256: 'AB:CD:…(Beispiel)', validTo: 'Feb  1 12:00:00 2029 GMT' } });
+const config = { ...loadConfig(root, {}), passwordHash: await hashPassword(PASSWORD), sessionSecret: 'e'.repeat(48), pollMs: 1000, envRoot: tmp, limitsFile: path.join(tmp, 'limits.json'), avatarDir: path.join(tmp, 'avatars') };
+for (const p of pm2.procs) {
+  p.pm2_env.pm_cwd = path.join(tmp, p.name);
+  fs.mkdirSync(p.pm2_env.pm_cwd, { recursive: true });
+}
+fs.writeFileSync(path.join(tmp, 'gambino-bot', '.env'), `DISCORD_TOKEN=${FAKE_TOKEN}\nDATABASE_URL=postgres://u:geheim@db/x\nPREFIX=!\n`);
+// Discord-Attrappe: Status-API und Profilbild (keine echten Netzaufrufe)
+const AV = fs.readFileSync(path.join(root, 'test', 'e2e', 'avatar.png'));
+const fakeFetch = async (url) => {
+  if (url.includes('discordstatus.com')) return { ok: true, json: async () => ({ status: { indicator: 'none', description: 'All Systems Operational' }, components: [{ name: 'API', status: 'operational' }], incidents: [] }) };
+  if (url.endsWith('/users/@me')) return { ok: true, json: async () => ({ id: '123456789012345678', avatar: 'b'.repeat(32), username: 'Gambino' }) };
+  if (url.includes('cdn.discordapp.com')) return { ok: true, arrayBuffer: async () => AV };
+  return { ok: false, status: 404 };
+};
+const app = createApp({ config, pm2, fetchImpl: fakeFetch, version: '1.0.0', log: { info() {}, warn() {}, error: console.error }, tlsInfo: { fingerprint256: 'AB:CD:…(Beispiel)', validTo: 'Feb  1 12:00:00 2029 GMT' } });
 
 // Etwas Leben: schwankende Werte und laufende Log-Ausgabe
 const SAMPLES = [
@@ -149,6 +162,20 @@ async function tour(page, shot, mobile) {
   assert.ok(!cfg.includes(FAKE_TOKEN) && !cfg.includes('hunter2secret') && !cfg.includes('ghp_'));
   await page.evaluate(() => document.querySelector('.tabs').scrollIntoView());
   await shot('06-bot-konfiguration');
+  await page.click('.tabs button:has-text("Umgebung")');
+  await page.waitForSelector('.env-row');
+  const envText = await page.locator('#content').textContent();
+  assert.ok(envText.includes('DATABASE_URL') && !envText.includes('geheim') && !envText.includes(FAKE_TOKEN));
+  await page.locator('.env-row', { hasText: 'PREFIX' }).locator('button:has-text("Ändern")').click();
+  await page.fill('.dialog input[name=value]', '?');
+  await page.fill('.dialog input[name=password]', PASSWORD);
+  await page.click('.dialog button[type=submit]');
+  await page.waitForSelector('.env-banner');
+  assert.match(fs.readFileSync(path.join(tmp, 'gambino-bot', '.env'), 'utf8'), /^PREFIX=\?$/m);
+  await page.fill('.limit-input', '256');
+  await page.click('.limit-row button:has-text("Speichern")');
+  await page.waitForFunction(() => document.querySelector('.toasts')?.textContent.includes('256 MB'));
+  await shot('06b-bot-umgebung');
   await page.click('.tabs button:has-text("Letzte Fehler")');
   await page.waitForSelector('.log-view');
 

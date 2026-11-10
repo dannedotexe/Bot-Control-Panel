@@ -2,14 +2,23 @@
 // verteilt den Zustand an verbundene Clients (SSE). Ohne Zuschauer wird nur selten abgefragt.
 import fs from 'node:fs';
 import { SystemSampler, systemInfo } from './system.mjs';
+import path from 'node:path';
 import { publicBot } from './pm2.mjs';
+import { Limits, fetchDiscordStatus, fetchDiscordAvatar, findToken } from './extras.mjs';
 
 const HISTORY = 120;
 const BOT_HISTORY = 60;
 const MAX_NOTIFICATIONS = 50;
 
 export class Monitor {
-  constructor({ pm2, config, log = console, sampler = new SystemSampler() }) {
+  constructor({ pm2, config, log = console, sampler = new SystemSampler(), fetchImpl = globalThis.fetch }) {
+    this.fetchImpl = fetchImpl;
+    this.limits = new Limits(config.limitsFile);
+    this.over = new Map(); // id -> { count, lastRestart }
+    this.discord = null;
+    this.discordTimer = null;
+    this.discordNames = new Map();
+    this.avatarFetchedAt = 0;
     this.pm2 = pm2;
     this.config = config;
     this.log = log;
@@ -37,11 +46,49 @@ export class Monitor {
     this.running = true;
     await this.tick();
     this.schedule();
+    if (this.config.discordStatus) this.pollDiscord();
+    if (this.config.discordAvatars) setTimeout(() => this.refreshAvatars(), 5000).unref?.();
+  }
+
+  async pollDiscord() {
+    if (!this.running) return;
+    try {
+      const prev = this.discord;
+      this.discord = await fetchDiscordStatus(this.fetchImpl);
+      if (prev && prev.indicator === 'none' && this.discord.indicator !== 'none') this.notify('warn', 'Discord meldet eine Störung', this.discord.description);
+      if (prev && prev.indicator !== 'none' && this.discord.indicator === 'none') this.notify('info', 'Discord: Störung behoben');
+      this.broadcast('discord', this.discord);
+    } catch (err) {
+      this.discord = { ...(this.discord || {}), indicator: this.discord?.indicator || 'unknown', error: true, checkedAt: Date.now() };
+    }
+    this.discordTimer = setTimeout(() => this.pollDiscord(), 180_000);
+    this.discordTimer.unref?.();
+  }
+
+  // Profilbilder einmal täglich über die Discord-API holen (Token bleibt auf dem Server).
+  async refreshAvatars() {
+    if (!this.running) return;
+    this.avatarFetchedAt = Date.now();
+    for (const bot of this.bots) {
+      if (bot.self) continue;
+      const token = findToken(bot, this.config.envRoot);
+      if (!token) continue;
+      try {
+        const me = await fetchDiscordAvatar(token, path.join(this.config.avatarDir, 'auto', `${bot.name}.png`), this.fetchImpl);
+        if (me?.username) this.discordNames.set(bot.name, me.username);
+      } catch {
+        /* nächster Versuch morgen */
+      }
+    }
+    this.avatarsAt = 0;
+    const t = setTimeout(() => this.refreshAvatars(), 24 * 3_600_000);
+    t.unref?.();
   }
 
   stop() {
     this.running = false;
     clearTimeout(this.timer);
+    clearTimeout(this.discordTimer);
   }
 
   schedule() {
@@ -103,6 +150,7 @@ export class Monitor {
       this.pm2Ok = false;
     }
     this.record(now);
+    this.enforceLimits(now);
     this.checkThresholds();
     this.broadcast('state', this.state());
   }
@@ -151,6 +199,27 @@ export class Monitor {
     }
   }
 
+  // RAM-Limit: dreimal hintereinander über dem Limit -> Neustart über pm2 (höchstens alle 5 Minuten).
+  enforceLimits(now) {
+    for (const b of this.bots) {
+      const limit = this.limits.get(b.name);
+      if (!limit || b.self || b.status !== 'online') {
+        this.over.delete(b.id);
+        continue;
+      }
+      const st = this.over.get(b.id) || { count: 0, lastRestart: 0 };
+      st.count = b.memory > limit.memoryMB * 1048576 ? st.count + 1 : 0;
+      this.over.set(b.id, st);
+      if (st.count >= 3 && now - st.lastRestart > 300_000) {
+        st.count = 0;
+        st.lastRestart = now;
+        this.expect(b.id);
+        this.notify('warn', `${b.name}: RAM-Limit überschritten`, `${Math.round(b.memory / 1048576)} MB > ${limit.memoryMB} MB – wird neu gestartet.`);
+        this.pm2.act('restart', b.id).catch((err) => this.log.error(`[limit] ${err.message}`));
+      }
+    }
+  }
+
   checkThresholds() {
     const s = this.system;
     if (!s) return;
@@ -175,7 +244,8 @@ export class Monitor {
     if (now - this.avatarsAt < 60_000) return;
     this.avatarsAt = now;
     try {
-      this.avatars = new Set(fs.readdirSync(this.config.avatarDir).filter((f) => f.endsWith('.png')).map((f) => f.slice(0, -4)));
+      const list = (d) => (fs.existsSync(d) ? fs.readdirSync(d).filter((f) => f.endsWith('.png')).map((f) => f.slice(0, -4)) : []);
+      this.avatars = new Set([...list(this.config.avatarDir), ...list(path.join(this.config.avatarDir, 'auto'))]);
     } catch {
       this.avatars = new Set();
     }
@@ -184,7 +254,7 @@ export class Monitor {
   state() {
     const now = Date.now();
     this.loadAvatars(now);
-    return { ts: now, pm2Ok: this.pm2Ok, system: this.system, bots: this.bots.map((b) => ({ ...publicBot(b), avatar: this.avatars.has(b.name) })) };
+    return { ts: now, pm2Ok: this.pm2Ok, system: this.system, bots: this.bots.map((b) => ({ ...publicBot(b), avatar: this.avatars.has(b.name), discordName: this.discordNames.get(b.name) || null, memoryLimitMB: this.limits.get(b.name)?.memoryMB || null })) };
   }
 
   snapshot() {
@@ -193,6 +263,7 @@ export class Monitor {
       history: this.history,
       botHistory: Object.fromEntries(this.botHistory),
       notifications: this.notifications,
+      discord: this.discord,
       state: this.state(),
     };
   }

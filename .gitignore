@@ -4,3 +4,5 @@ data/tls/
 data/avatars/*.png
 *.log
 test/e2e/.tmp/
+data/limits.json
+data/avatars/auto/

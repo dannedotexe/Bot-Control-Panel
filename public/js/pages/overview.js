@@ -1,4 +1,4 @@
-import { h, icon, pageHead, statusEl, meter, avatar, botCounts, fmtBytes, fmtPct, fmtDuration, fmtAgo, setText } from '../ui.js';
+import { h, icon, pageHead, statusEl, meter, avatar, botCounts, fmtBytes, fmtPct, fmtDuration, fmtAgo, setText, discordStatusEl } from '../ui.js';
 import { store } from '../api.js';
 
 function stat(label, dotCls) {
@@ -44,6 +44,7 @@ export function overviewPage() {
   const rStatus = plainRow('Status');
   rStatus.set(serverStatus);
   const rUptime = plainRow('Uptime');
+  const rDiscord = plainRow('Discord-API');
   const rCpu = metricRow('CPU');
   const rRam = metricRow('RAM');
   const rDisk = metricRow('Disk');
@@ -66,7 +67,7 @@ export function overviewPage() {
       h(
         'div',
         { class: 'grid cols-2' },
-        h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: 'Server' }), h('a', { href: '#/server' }, 'Details', icon('chevron-right'))), h('div', { class: 'rows' }, rStatus, rUptime, rCpu, rRam, rDisk)),
+        h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: 'Server' }), h('a', { href: '#/server' }, 'Details', icon('chevron-right'))), h('div', { class: 'rows' }, rStatus, rDiscord, rUptime, rCpu, rRam, rDisk)),
         h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: 'Bots' }), h('a', { href: '#/bots' }, 'Alle anzeigen', icon('chevron-right'))), botList),
       ),
       h('div', { class: 'panel' }, h('div', { class: 'panel-head' }, h('h2', { text: 'Letzte Ereignisse' })), events),
@@ -133,6 +134,7 @@ export function overviewPage() {
       rRam.set((sys.mem.used / sys.mem.total) * 100, `${fmtBytes(sys.mem.used)} / ${fmtBytes(sys.mem.total)}`);
       rDisk.set((sys.disk.used / sys.disk.total) * 100, `${fmtBytes(sys.disk.used)} / ${fmtBytes(sys.disk.total)}`);
     }
+    rDiscord.set(discordStatusEl(store.discord));
     renderBots(s.bots);
     renderEvents();
   }

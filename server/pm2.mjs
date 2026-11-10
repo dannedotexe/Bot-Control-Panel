@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { redact, describeEnv } from './redact.mjs';
 
+const TOKEN_KEYS = ['DISCORD_TOKEN', 'BOT_TOKEN', 'DISCORD_BOT_TOKEN', 'TOKEN', 'CLIENT_TOKEN'];
+
 export const ACTIONS = new Set(['start', 'stop', 'restart']);
 
 const require = createRequire(import.meta.url);
@@ -142,6 +144,7 @@ export function normalize(proc, selfName) {
     // nur intern verwendet:
     _outLog: e.pm_out_log_path || '',
     _errLog: e.pm_err_log_path || '',
+    _tokens: Object.fromEntries(TOKEN_KEYS.filter((k) => typeof e.env?.[k] === 'string').map((k) => [k, e.env[k]])),
     _config: {
       script: e.pm_exec_path || null,
       cwd: e.pm_cwd || null,

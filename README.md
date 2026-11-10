@@ -20,6 +20,15 @@ Weitere Screenshots: [`docs/screenshots/`](docs/screenshots).
 - **Wenig RAM:** reines Node.js (`http`/`https`/`crypto`), **0 npm-Pakete zur Laufzeit**. pm2 wird über
   die API des ohnehin global installierten pm2 angesprochen (eine dauerhafte Verbindung zum Daemon).
   Ohne geöffnetes Panel wird nur alle 20 s abgefragt, Logdateien werden gar nicht gelesen.
+- **.env-Editor pro Bot:** Variablen hinzufügen, ändern, entfernen – Werte werden nie angezeigt oder an den
+  Browser zurückgeschickt, jede Änderung braucht das Panel-Passwort, vorher wird `.env.bak` angelegt.
+  Nur für Bots, deren Arbeitsverzeichnis unter dem Home-Ordner liegt (`BCP_ENV_ROOT`), keine Symlinks.
+- **RAM-Limit pro Bot:** Liegt ein Bot dreimal hintereinander über dem Limit, startet das Panel ihn neu
+  (höchstens alle 5 Min.) und meldet es. Das ist ein Neustart, keine Drosselung – echte Drosselung braucht Container/cgroups.
+- **Discord-API-Status** (discordstatus.com, alle 3 Min.) in Overview und Server; Meldung bei Störungen.
+- **Discord-Profilbilder:** Das Panel liest das Bot-Token (`DISCORD_TOKEN`, `BOT_TOKEN`, `TOKEN` …) aus der `.env`
+  oder pm2-Umgebung, fragt einmal täglich `/users/@me` bei Discord ab und speichert das Bild lokal. Das Token
+  bleibt auf dem Server. Abschalten: `BCP_DISCORD_AVATARS=0`. Eigene Bilder in `data/avatars/` haben Vorrang.
 - **x64 und arm64:** kein nativer Code, kein Build auf dem Server (`public/` ist eingecheckt).
 
 ## Installation

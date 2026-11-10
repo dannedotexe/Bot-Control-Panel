@@ -19,7 +19,11 @@ const hash = await hashPassword(PASSWORD);
 async function setup(t, { totp = '' } = {}) {
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bcp-app-'));
   const pm2 = createFakePm2({ logDir });
-  const config = { ...loadConfig(root, {}), passwordHash: hash, sessionSecret: 'x'.repeat(48), adminUser: 'admin', totpSecret: totp, pollMs: 1000 };
+  const config = { ...loadConfig(root, {}), passwordHash: hash, sessionSecret: 'x'.repeat(48), adminUser: 'admin', totpSecret: totp, pollMs: 1000, discordStatus: false, discordAvatars: false, envRoot: logDir, limitsFile: path.join(logDir, 'limits.json') };
+  for (const p of pm2.procs) {
+    p.pm2_env.pm_cwd = path.join(logDir, p.name);
+    fs.mkdirSync(p.pm2_env.pm_cwd, { recursive: true });
+  }
   const app = createApp({ config, pm2, log: quiet, version: 'test' });
   await app.start();
   const server = http.createServer(app.handler);
@@ -230,4 +234,61 @@ test('Monitor meldet Statuswechsel und pm2-Ausfall', async (t) => {
   const titles = app.monitor.notifications.map((n) => `${n.level}:${n.title}`);
   assert.deepEqual(titles, ['error:gambino-bot ist abgestürzt', 'warn:chud-bot wurde neu gestartet', 'error:pm2 nicht erreichbar', 'info:pm2 wieder erreichbar']);
   assert.equal(app.monitor.state().pm2Ok, true);
+});
+
+test('.env-Editor: nur Namen lesen, schreiben nur mit Passwort, Werte nie zurück', async (t) => {
+  const { client, logDir } = await setup(t);
+  await client.login();
+  const envFile = path.join(logDir, 'gambino-bot', '.env');
+  fs.writeFileSync(envFile, `# Kommentar\nDISCORD_TOKEN=${FAKE_TOKEN}\nPREFIX=!\n`);
+  const read = await client.req('/api/bots/0/env');
+  assert.deepEqual(read.data, { exists: true, keys: ['DISCORD_TOKEN', 'PREFIX'] });
+  assert.ok(!JSON.stringify(read.data).includes(FAKE_TOKEN));
+
+  const post = (body, headers) => client.req('/api/bots/0/env', { method: 'POST', body, headers });
+  assert.equal((await post({ key: 'NEU', value: 'x', password: PASSWORD }, { 'X-CSRF-Token': 'falsch' })).data.error, 'bad_csrf');
+  assert.equal((await post({ key: 'NEU', value: 'x', password: 'falsch' })).data.error, 'wrong_password');
+  assert.equal((await post({ key: 'NEU', value: 'x' })).status, 400);
+  assert.equal((await post({ key: '../x', value: 'x', password: PASSWORD })).data.error, 'invalid_key');
+  assert.equal((await post({ key: 'A', value: 'a\nB=b', password: PASSWORD })).data.error, 'invalid_value');
+  assert.equal((await client.req('/api/bots/5/env', { method: 'POST', body: { key: 'A', value: 'b', password: PASSWORD } })).data.error, 'self_protected');
+
+  assert.equal((await post({ key: 'DISCORD_TOKEN', value: 'neuer token mit leerzeichen', password: PASSWORD })).status, 200);
+  assert.equal((await post({ key: 'NEU', value: 'wert', password: PASSWORD })).status, 200);
+  assert.equal((await post({ key: 'PREFIX', remove: true, password: PASSWORD })).status, 200);
+  assert.equal(fs.readFileSync(envFile, 'utf8'), '# Kommentar\nDISCORD_TOKEN="neuer token mit leerzeichen"\nNEU=wert\n');
+  assert.equal((fs.statSync(envFile).mode & 0o777).toString(8), '600');
+  assert.ok(fs.existsSync(`${envFile}.bak`));
+});
+
+test('.env-Editor: kein Zugriff außerhalb von envRoot und keine Symlinks', async (t) => {
+  const { client, pm2, logDir, app } = await setup(t);
+  await client.login();
+  pm2.procs[1].pm2_env.pm_cwd = os.tmpdir();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'bcp-out-'));
+  fs.writeFileSync(path.join(outside, 'secret'), 'x');
+  fs.symlinkSync(path.join(outside, 'secret'), path.join(logDir, 'hugosmp-bot', '.env'));
+  await app.monitor.tick();
+  assert.equal((await client.req('/api/bots/1/env')).data.error, 'env_outside_root');
+  assert.equal((await client.req('/api/bots/2/env')).data.error, 'env_not_regular');
+  assert.equal((await client.req('/api/bots/2/env', { method: 'POST', body: { key: 'A', value: 'b', password: PASSWORD } })).data.error, 'env_not_regular');
+  assert.equal(fs.readFileSync(path.join(outside, 'secret'), 'utf8'), 'x');
+  fs.rmSync(outside, { recursive: true });
+});
+
+test('RAM-Limit: Validierung und Neustart nach dreimaliger Überschreitung', async (t) => {
+  const { client, app, pm2 } = await setup(t);
+  await client.login();
+  const set = (id, memoryMB) => client.req(`/api/bots/${id}/limit`, { method: 'POST', body: { memoryMB } });
+  assert.equal((await set(0, 5)).data.error, 'invalid_limit');
+  assert.equal((await set(0, '256')).data.error, 'invalid_limit');
+  assert.equal((await set(5, 256)).data.error, 'self_protected');
+  assert.equal((await set(0, 64)).status, 200);
+  pm2.procs[0].monit.memory = 90 * 1048576;
+  for (let i = 0; i < 3; i++) await app.monitor.tick();
+  assert.deepEqual(pm2.calls.at(-1), ['restart', 0]);
+  assert.ok(app.monitor.notifications.some((n) => n.title.includes('RAM-Limit')));
+  assert.equal(app.monitor.state().bots[0].memoryLimitMB, 64);
+  assert.equal((await set(0, null)).status, 200);
+  assert.equal(app.monitor.state().bots[0].memoryLimitMB, null);
 });

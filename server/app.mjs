@@ -7,6 +7,7 @@ import { verifyPassword, safeEqual, SessionStore, LoginLimiter, TotpVerifier } f
 import { ACTIONS, publicBot } from './pm2.mjs';
 import { Monitor } from './monitor.mjs';
 import * as logs from './logs.mjs';
+import { readEnvKeys, writeEnvKey, EnvError, ENV_KEY } from './extras.mjs';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -99,12 +100,12 @@ function readJson(req) {
   });
 }
 
-export function createApp({ config, pm2, log = console, now = Date.now, version = '0.0.0', tlsInfo = null }) {
+export function createApp({ config, pm2, log = console, now = Date.now, version = '0.0.0', tlsInfo = null, fetchImpl = globalThis.fetch }) {
   const statics = loadStatic(config.publicDir);
   const sessions = new SessionStore({ secret: config.sessionSecret, idleMs: config.sessionIdleMs, maxMs: config.sessionMaxMs, now });
   const limiter = new LoginLimiter({ now });
   const totp = config.totpSecret ? new TotpVerifier(config.totpSecret, now) : null;
-  const monitor = new Monitor({ pm2, config, log });
+  const monitor = new Monitor({ pm2, config, log, fetchImpl });
   const cookieName = '__Host-bcp_session';
   const streams = new Set();
   let verifyQueue = Promise.resolve(); // scrypt-Prüfungen nacheinander (begrenzt RAM/CPU)
@@ -289,6 +290,26 @@ export function createApp({ config, pm2, log = console, now = Date.now, version 
     json(res, 200, { ok: true, bot: monitor.findBot(id) ? publicBot(monitor.findBot(id)) : null });
   }
 
+  // Erneute Passwortabfrage für besonders sensible Aktionen (Schreiben in .env der Bots).
+  async function confirmPassword(req, password) {
+    const ip = clientIp(req);
+    const blocked = limiter.blockedFor(ip);
+    if (blocked > 0) throw new HttpError(429, 'locked', { retryAfter: Math.ceil(blocked / 1000) });
+    if (typeof password !== 'string' || password.length > 1024) throw new HttpError(400, 'invalid_input');
+    const check = verifyQueue.then(() => verifyPassword(password, config.passwordHash).catch(() => false));
+    verifyQueue = check;
+    if (!(await check)) {
+      limiter.fail(ip);
+      throw new HttpError(403, 'wrong_password');
+    }
+  }
+
+  function envErr(err) {
+    if (err instanceof EnvError) return new HttpError(409, `env_${err.message}`);
+    if (err?.code === 'ENOENT') return new HttpError(409, 'env_no_cwd');
+    return err;
+  }
+
   async function api(req, res, url) {
     const p = url.pathname;
     const method = req.method;
@@ -350,7 +371,9 @@ export function createApp({ config, pm2, log = console, now = Date.now, version 
       });
     }
 
-    const m = /^\/api\/bots\/(\d+)(\/action|\/errors)?$/.exec(p);
+    if (p === '/api/discord' && method === 'GET') return json(res, 200, { discord: monitor.discord });
+
+    const m = /^\/api\/bots\/(\d+)(\/action|\/errors|\/env|\/limit)?$/.exec(p);
     if (m) {
       const id = botFromParam(m[1]);
       if (m[2] === '/action' && method === 'POST') return botAction(req, res, session, id);
@@ -358,6 +381,41 @@ export function createApp({ config, pm2, log = console, now = Date.now, version 
       if (!bot) throw new HttpError(404, 'not_found');
       if (!m[2] && method === 'GET') {
         return json(res, 200, { bot: publicBot(bot), config: bot._config, history: monitor.botHistory.get(id) || [] });
+      }
+      if (m[2] === '/env' && method === 'GET') {
+        try {
+          return json(res, 200, readEnvKeys(bot._config.cwd, config.envRoot));
+        } catch (err) {
+          throw envErr(err);
+        }
+      }
+      if (m[2] === '/env' && method === 'POST') {
+        requireCsrf(req, session);
+        const body = await readJson(req);
+        const { key, value, remove, password } = body;
+        if (typeof key !== 'string' || !ENV_KEY.test(key)) throw new HttpError(400, 'invalid_key');
+        if (!remove && (typeof value !== 'string' || value.length > 4096 || /[\r\n\0]/.test(value))) throw new HttpError(400, 'invalid_value');
+        if (bot.self) throw new HttpError(409, 'self_protected');
+        await confirmPassword(req, password);
+        let result;
+        try {
+          result = writeEnvKey(bot._config.cwd, config.envRoot, key, remove ? null : value);
+        } catch (err) {
+          throw envErr(err);
+        }
+        // Nur Schlüsselname protokollieren, nie den Wert
+        log.info(`[audit] ${session.user}@${clientIp(req)}: .env ${remove ? 'entfernt' : 'gesetzt'} ${key} bei ${bot.name}`);
+        monitor.notify('info', `${bot.name}: .env geändert`, `${key} ${remove ? 'entfernt' : 'gesetzt'} – wirksam nach Neustart.`);
+        return json(res, 200, { ok: true, ...result });
+      }
+      if (m[2] === '/limit' && method === 'POST') {
+        requireCsrf(req, session);
+        const { memoryMB } = await readJson(req);
+        if (memoryMB !== null && !(Number.isInteger(memoryMB) && memoryMB >= 32 && memoryMB <= 65536)) throw new HttpError(400, 'invalid_limit');
+        if (bot.self) throw new HttpError(409, 'self_protected');
+        monitor.limits.set(bot.name, memoryMB);
+        log.info(`[audit] ${session.user}@${clientIp(req)}: RAM-Limit ${bot.name} = ${memoryMB ?? 'keins'}`);
+        return json(res, 200, { ok: true, memoryMB });
       }
       if (m[2] === '/errors' && method === 'GET') {
         const tail = bot._errLog && bot._errLog !== '/dev/null' ? logs.readTail(bot._errLog, 80).lines : [];
@@ -375,8 +433,9 @@ export function createApp({ config, pm2, log = console, now = Date.now, version 
     const avatar = /^\/avatars\/([\w.-]{1,64})\.png$/.exec(p);
     if (avatar) {
       requireSession(req, false);
-      const file = path.join(config.avatarDir, `${avatar[1]}.png`);
-      if (!file.startsWith(config.avatarDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).size > 512 * 1024) throw new HttpError(404, 'not_found');
+      let file = path.join(config.avatarDir, `${avatar[1]}.png`);
+      if (!fs.existsSync(file)) file = path.join(config.avatarDir, 'auto', `${avatar[1]}.png`);
+      if (!path.resolve(file).startsWith(config.avatarDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).size > 512 * 1024) throw new HttpError(404, 'not_found');
       res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600' });
       return res.end(req.method === 'HEAD' ? undefined : fs.readFileSync(file));
     }
