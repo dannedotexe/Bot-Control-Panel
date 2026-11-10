@@ -13,9 +13,10 @@ for f in server/*.mjs; do node --check "$f"; done
 if pm2 describe "$APP" >/dev/null 2>&1; then pm2 restart "$APP" --update-env >/dev/null
 else pm2 start ecosystem.config.cjs --only "$APP" >/dev/null; fi
 PORT="$(node scripts/envtool.mjs get BCP_PORT)"; PORT="${PORT:-8443}"
+SCHEME=https; [ "$(node scripts/envtool.mjs get BCP_BEHIND_PROXY)" = "1" ] && SCHEME=http
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
-  if curl -ksS --max-time 3 "https://127.0.0.1:$PORT/api/session" 2>/dev/null | grep -q '"authenticated"'; then
+  if curl -ksS --max-time 3 "$SCHEME://127.0.0.1:$PORT/api/session" 2>/dev/null | grep -q '"authenticated"'; then
     echo "Update $BEFORE → $AFTER erfolgreich, Panel läuft."; exit 0
   fi
 done

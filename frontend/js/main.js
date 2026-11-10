@@ -52,6 +52,51 @@ function seenId() {
   }
 }
 
+// Schnellsuche: Bots nach Name finden, Enter öffnet den ersten Treffer.
+function buildSearch() {
+  const list = h('div', { class: 'menu search-results', role: 'listbox' });
+  list.hidden = true;
+  let hits = [];
+  const input = h('input', {
+    class: 'input',
+    type: 'search',
+    placeholder: 'Bots suchen …',
+    'aria-label': 'Bots suchen',
+    autocomplete: 'off',
+    oninput: () => render(),
+    onfocus: () => render(),
+    onblur: () => setTimeout(() => (list.hidden = true), 150),
+    onkeydown: (e) => {
+      if (e.key === 'Enter' && hits[0]) go(hits[0]);
+      if (e.key === 'Escape') input.blur();
+    },
+  });
+  function go(b) {
+    input.value = '';
+    list.hidden = true;
+    input.blur();
+    location.hash = `#/bots/${b.id}`;
+  }
+  function render() {
+    const q = input.value.trim().toLowerCase();
+    const bots = store.state?.bots || [];
+    hits = q ? bots.filter((b) => b.name.toLowerCase().includes(q)).slice(0, 6) : [];
+    list.replaceChildren(
+      ...(hits.length
+        ? hits.map((b) => h('button', { class: 'item', onmousedown: (e) => (e.preventDefault(), go(b)) }, h('i', { class: `dot ${b.status === 'online' ? 'ok' : b.status === 'stopped' ? '' : 'err'}` }), b.name))
+        : [h('div', { class: 'head', text: q ? 'Kein Bot gefunden' : '' })]),
+    );
+    list.hidden = !q;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      input.focus();
+    }
+  });
+  return h('div', { class: 'menu-wrap topsearch' }, h('div', { class: 'field-icon' }, icon('search'), input, h('kbd', { text: '/' })), list);
+}
+
 function buildShell() {
   const links = new Map();
   const botCount = h('span', { class: 'count num' });
@@ -168,6 +213,7 @@ function buildShell() {
         h('span', { class: 'brand-mark mobile-brand' }, icon('terminal')),
         crumbs,
         h('div', { class: 'spacer' }),
+        buildSearch(),
         h('div', { class: 'conn', title: 'Live-Verbindung' }, connDot, connText),
         bellWrap,
         h('a', { class: 'btn ghost icon-only', href: '#/settings', title: 'Einstellungen', 'aria-label': 'Einstellungen' }, icon('settings')),
