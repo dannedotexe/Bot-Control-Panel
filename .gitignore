@@ -1,0 +1,6 @@
+node_modules/
+.env
+data/tls/
+data/avatars/*.png
+*.log
+test/e2e/.tmp/

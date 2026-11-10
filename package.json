@@ -1,0 +1,20 @@
+{
+  "name": "bot-control-panel",
+  "version": "1.0.0",
+  "description": "Schlankes Web-Control-Panel für pm2-verwaltete Discord-Bots",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "e2e": "node test/e2e/run.mjs"
+  },
+  "devDependencies": {
+    "lucide-static": "1.70.0"
+  }
+}
